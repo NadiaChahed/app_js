@@ -43,7 +43,7 @@ jobs:
   deploy:
     needs: build
     if: github.event_name == 'workflow_dispatch'   # déploiement manuel
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     environment: production   # vous pouvez exiger une approbation dans les settings
     steps:
       - uses: actions/checkout@v4

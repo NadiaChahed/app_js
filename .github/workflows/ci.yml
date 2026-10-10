@@ -26,7 +26,7 @@ jobs:
 
       - name: Build and push Docker image
         run: |
-          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA::7}"
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}"
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
 

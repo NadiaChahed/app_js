@@ -1,4 +1,3 @@
-```yaml
 name: Docker Swarm CI/CD
 
 'on':
@@ -69,4 +68,3 @@ jobs:
           ssh "$SWARM_USER@$SWARM_HOST" \
             "IMAGE='$IMAGE' docker stack deploy \
             -c docker-compose.yml ma_stack"
-```

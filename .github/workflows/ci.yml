@@ -1,0 +1,38 @@
+```yaml
+stages:
+  - build
+  - deploy
+
+variables:
+  IMAGE: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+
+build_image:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - docker build -t "$IMAGE" .
+    - docker push "$IMAGE"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+deploy_swarm:
+  stage: deploy
+  image: alpine:3.20
+  before_script:
+    - apk add --no-cache openssh-client
+    - eval "$(ssh-agent -s)"
+    - echo "$SWARM_SSH_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - ssh-keyscan -H "$SWARM_HOST" >> ~/.ssh/known_hosts
+  script:
+    - scp docker-compose.yml "$SWARM_USER@$SWARM_HOST:~/docker-compose.yml"
+    - ssh "$SWARM_USER@$SWARM_HOST" "IMAGE=$IMAGE CI_COMMIT_SHORT_SHA=$CI_COMMIT_SHORT_SHA docker stack deploy -c docker-compose.yml ma_stack --with-registry-auth"
+  environment:
+    name: production
+  when: manual
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+```

@@ -42,7 +42,7 @@ jobs:
 
   deploy:
     needs: build
-    if: github.event_name == 'workflow_dispatch'   # déploiement manuel
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: self-hosted
     environment: production   # vous pouvez exiger une approbation dans les settings
     steps:

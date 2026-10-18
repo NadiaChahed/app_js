@@ -1,9 +1,11 @@
-name: Build and Deploy
+
+name: Build and Deploy to Kubernetes
 
 on:
   push:
-    branches: [main]
-  workflow_dispatch:   # permet de lancer le déploiement manuellement
+    branches:
+      - main
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
@@ -11,61 +13,91 @@ env:
 
 jobs:
   build:
+    name: Build and Push Image
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
       packages: write
+
     outputs:
       image: ${{ steps.vars.outputs.image }}
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Calcul du nom d'image
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set image name
         id: vars
         run: |
-          IMAGE=$(echo "${REGISTRY}/${IMAGE_NAME}:${GITHUB_SHA::7}" | tr '[:upper:]' '[:lower:]')
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/login-action@v3
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/setup-buildx-action@v3
+      - name: Build Docker image
+        run: docker build -t "${{ steps.vars.outputs.image }}" .
 
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.vars.outputs.image }}
+      - name: Push Docker image
+        run: docker push "${{ steps.vars.outputs.image }}"
 
   deploy:
+    name: Deploy to Kubernetes
+    runs-on: self-hosted
+
     needs: build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    
-       
+
+    environment:
+      name: production
+
+    env:
+      IMAGE: ${{ needs.build.outputs.image }}
+      APP_VERSION: ${{ github.sha }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Configuration SSH
+      - name: Install kubectl and gettext
         run: |
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          echo "${{ secrets.SWARM_SSH_KEY }}" | tr -d '\r' > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H "${{ secrets.SWARM_HOST }}" >> ~/.ssh/known_hosts
+          if ! command -v kubectl >/dev/null 2>&1; then
+            echo "kubectl doit être installé sur le runner."
+            exit 1
+          fi
+          if ! command -v envsubst >/dev/null 2>&1; then
+            echo "envsubst doit être installé sur le runner."
+            exit 1
+          fi
 
-      - name: Copie du docker-compose
-        run: scp docker-compose.yml ${{ secrets.SWARM_USER }}@${{ secrets.SWARM_HOST }}:~/docker-compose.yml
+      - name: Check Kubernetes connection
+        run: kubectl get nodes
 
-      - name: Déploiement sur Swarm
+      - name: Apply namespace
+        run: kubectl apply -f k8s/namespace.yaml
+
+      - name: Create registry secret
         env:
-          IMAGE: ${{ needs.build.outputs.image }}
-          GHCR_USER: ${{ github.actor }}
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_DEPLOY_USER: ${{ secrets.REGISTRY_DEPLOY_USER }}
+          REGISTRY_DEPLOY_TOKEN: ${{ secrets.REGISTRY_DEPLOY_TOKEN }}
         run: |
-          ssh ${{ secrets.SWARM_USER }}@${{ secrets.SWARM_HOST }} "
-            echo '$GHCR_TOKEN' | docker login ghcr.io -u '$GHCR_USER' --password-stdin &&
-            IMAGE='$IMAGE' docker stack deploy -c docker-compose.yml ma_stack --with-registry-auth
-          "
+          kubectl create secret docker-registry gitlab-registry \
+            --docker-server=ghcr.io \
+            --docker-username="$REGISTRY_DEPLOY_USER" \
+            --docker-password="$REGISTRY_DEPLOY_TOKEN" \
+            -n demo \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy application
+        run: |
+          envsubst '${IMAGE} ${APP_VERSION}' \
+            < k8s/deployment.yaml | kubectl apply -f -
+
+      - name: Apply service
+        run: kubectl apply -f k8s/service.yaml
+
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/web -n demo --timeout=120s
